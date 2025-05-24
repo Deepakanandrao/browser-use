@@ -824,26 +824,12 @@
 
     if (hasInteractiveRole) return true;
 
-    // check whether element has event listeners
-    try {
-      if (typeof getEventListeners === 'function') {
-        const listeners = getEventListeners(element);
-        const mouseEvents = ['click', 'mousedown', 'mouseup', 'dblclick'];
-        for (const eventType of mouseEvents) {
-          if (listeners[eventType] && listeners[eventType].length > 0) {
-            return true; // Found a mouse interaction listener
-          }
-        }
-      } else {
-        // Fallback: Check common event attributes if getEventListeners is not available
-        const commonMouseAttrs = ['onclick', 'onmousedown', 'onmouseup', 'ondblclick'];
-        if (commonMouseAttrs.some(attr => element.hasAttribute(attr))) {
-          return true;
-        }
+    // Check common event attributes (getEventListeners doesn't work in page.evaluate context)
+    const commonMouseAttrs = ['onclick', 'onmousedown', 'onmouseup', 'ondblclick'];
+    for (const attr of commonMouseAttrs) {
+      if (element.hasAttribute(attr) || typeof element[attr] === 'function') {
+        return true;
       }
-    } catch (e) {
-      // console.warn(`Could not check event listeners for ${element.tagName}:`, e);
-      // If checking listeners fails, rely on other checks
     }
 
     return false
@@ -1007,7 +993,7 @@
 
     // Fast-path for common interactive elements
     const interactiveElements = new Set([
-      "a", "button", "input", "select", "textarea", "details", "summary"
+      "a", "button", "input", "select", "textarea", "details", "summary", "label"
     ]);
 
     if (interactiveElements.has(tagName)) return true;
@@ -1032,6 +1018,48 @@
     'radio', 'checkbox', 'tab', 'switch', 'slider', 'spinbutton',
     'combobox', 'searchbox', 'textbox', 'listbox', 'option', 'scrollbar'
   ]);
+
+  /**
+   * Heuristically determines if an element should be considered as independently interactive,
+   * even if it's nested inside another interactive container.
+   *
+   * This function helps detect deeply nested actionable elements (e.g., menu items within a button)
+   * that may not be picked up by strict interactivity checks.
+   */
+  function isHeuristicallyInteractive(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+
+    // Skip non-visible elements early for performance
+    if (!isElementVisible(element)) return false;
+
+    // Check for common attributes that often indicate interactivity
+    const hasInteractiveAttributes =
+      element.hasAttribute('role') ||
+      element.hasAttribute('tabindex') ||
+      element.hasAttribute('onclick') ||
+      typeof element.onclick === 'function';
+
+    // Check for semantic class names suggesting interactivity
+    const hasInteractiveClass = /\b(btn|clickable|menu|item|entry|link)\b/i.test(element.className || '');
+
+    // Determine whether the element is inside a known interactive container
+    const isInKnownContainer = Boolean(
+      element.closest('button,a,[role="button"],.menu,.dropdown,.list,.toolbar')
+    );
+
+    // Ensure the element has at least one visible child (to avoid marking empty wrappers)
+    const hasVisibleChildren = [...element.children].some(isElementVisible);
+
+    // Avoid highlighting elements whose parent is <body> (top-level wrappers)
+    const isParentBody = element.parentElement && element.parentElement.isSameNode(document.body);
+
+    return (
+      (isInteractiveElement(element) || hasInteractiveAttributes || hasInteractiveClass) &&
+      hasVisibleChildren &&
+      isInKnownContainer &&
+      !isParentBody
+    );
+  }
 
   /**
    * Checks if an element likely represents a distinct interaction
@@ -1070,29 +1098,17 @@
     if (element.hasAttribute('onclick') || typeof element.onclick === 'function') {
       return true;
     }
-    // Check for other common interaction event listeners
-    try {
-      const getEventListeners = window.getEventListenersForNode;
-      if (typeof getEventListeners === 'function') {
-        const listeners = getEventListeners(element);
-        const interactionEvents = ['mousedown', 'mouseup', 'keydown', 'keyup', 'submit', 'change', 'input', 'focus', 'blur'];
-        for (const eventType of interactionEvents) {
-          if (listeners[eventType] && listeners[eventType].length > 0) {
-            return true; // Found a common interaction listener
-          }
-        }
-      } else {
-        // Fallback: Check common event attributes if getEventListeners is not available
-        const commonEventAttrs = ['onmousedown', 'onmouseup', 'onkeydown', 'onkeyup', 'onsubmit', 'onchange', 'oninput', 'onfocus', 'onblur'];
-        if (commonEventAttrs.some(attr => element.hasAttribute(attr))) {
-          return true;
-        }
-      }
-    } catch (e) {
-      // console.warn(`Could not check event listeners for ${element.tagName}:`, e);
-      // If checking listeners fails, rely on other checks
+    
+    // Check common event attributes (getEventListenersForNode doesn't work in page.evaluate context)
+    const commonEventAttrs = ['onmousedown', 'onmouseup', 'onkeydown', 'onkeyup', 'onsubmit', 'onchange', 'oninput', 'onfocus', 'onblur'];
+    if (commonEventAttrs.some(attr => element.hasAttribute(attr))) {
+      return true;
     }
 
+    // if the element is not strictly interactive but appears clickable based on heuristic signals
+    if (isHeuristicallyInteractive(element)) {
+      return true;
+    }
 
     // Default to false: if it's interactive but doesn't match above,
     // assume it triggers the same action as the parent.
